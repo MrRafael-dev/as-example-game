@@ -10,9 +10,16 @@ const INPUT_STATES: usize = 16;
 
 /** Video RAM. Pixel data should be here. It contains up to 16KB of data. */
 const VRAM: usize = 25;
-//#endregion </offsets.ts>
 
+//#endregion </offsets.ts>
 //#region <sprites.ts>
+
+/** Font spritesheet width. */
+const SPR_FONT_WIDTH: i32 = 4;
+
+/** Font spritesheet height. */
+const SPR_FONT_HEIGHT: i32 = 60;
+
 /** Minimal font. */
 const SPR_FONT: usize = memory.data<u8>([
   0, 0, 0, 0,
@@ -86,6 +93,12 @@ const SPR_FONT: usize = memory.data<u8>([
   0, 0, 7, 0,
 ]);
 
+/** Enemy spritesheet width. */
+const SPR_ENEMIES_WIDTH: i32 = 8;
+
+/** Enemy spritesheet height. */
+const SPR_ENEMIES_HEIGHT: i32 = 32;
+
 /** Enemy sprites. */
 const SPR_ENEMIES: usize = memory.data<u8>([
   0, 0, 0, 0, 0, 0, 0, 0,
@@ -124,8 +137,8 @@ const SPR_ENEMIES: usize = memory.data<u8>([
   2, 2, 0, 2, 0, 2, 2, 0,
   2, 0, 0, 0, 0, 0, 2, 0,
 ]);
-//#endregion </sprites.ts>
 
+//#endregion </sprites.ts>
 //#region <api.ts>
 /**
  * @class Input
@@ -404,9 +417,240 @@ function range(min: i32 = 0, max: i32 = 0): i32 {
 
   return (Math.floor(Math.random() * (fmax - cmin)) as i32) + min;
 }
-//#endregion </api.ts>
 
+//#endregion </api.ts>
+//#region <game.ts>
+/**
+ * @class Rect
+ * 
+ * @description
+ * Represent a collision rectangle. It's used for AABB collision detection.
+ */
+class Rect {
+  /** X position. */
+  x: i32;
+
+  /** Y position. */
+  y: i32;
+
+  /** Width. */
+  width: i32;
+
+  /** Height. */
+  height: i32;
+
+  /**
+   * @constructor
+   * 
+   * @param {i32} x X position.
+   * @param {i32} y Y position.
+   * @param {i32} width Width.
+   * @param {i32} height Height.
+   */
+  constructor(x: i32 = 0, y: i32 = 0, width: i32 = 1, height: i32 = 1) {
+    this.x = x;
+    this.y = y;
+    this.width = width;
+    this.height = height;
+  }
+
+  /**
+   * Check collision between two rectangles.
+   *
+   * @param {Rect} rect Collision box.
+   *
+   * @returns {bool}
+   */
+  intersect(rect: Rect): bool {
+    return (
+      rect != this
+      && this.x               < rect.x + rect.width
+      && this.x + this.width  > rect.x
+      && this.y               < rect.y + rect.height
+      && this.height + this.y > rect.y
+    );
+  }
+}
+
+/**
+ * @class Sprite @extends Rect
+ * 
+ * @description
+ * Represent a basic game sprite.
+ */
+abstract class Sprite extends Rect {
+  /**
+   * @event update
+   * 
+   * This should be called each frame.
+   */
+  update(): void {}
+
+  /**
+   * @event draw
+   * 
+   * Draw-related events should go here.
+   */
+  draw(): void {}
+}
+
+/**
+ * @class Enemy @extends Sprite
+ * 
+ * @description
+ * An enemy. The player must prevent it from reaching the bottom of screen.
+ */
+class Enemy extends Sprite {
+  /** Enemy type (sprite). There are four of them. */
+  enemyType: i32;
+
+  /**
+   * 
+   * @param {i32} x X position.
+   * @param {i32} y Y position.
+   * @param {i32} enemyType Enemy type (sprite). There are four of them.
+   */
+  constructor(x: i32, y: i32, enemyType: i32) {
+    super(x, y, 8, 8);
+    this.enemyType = enemyType % 4;
+  }
+
+  /**
+   * Check if this enemy reached one of the sides of screen.
+   */
+  get isOnSide(): bool {
+    return this.x <= 0 || this.x >= (SCREEN_SIZE - this.width);
+  }
+
+  update(): void {
+  }
+
+  draw(): void {
+    drawImagePart(
+      SPR_ENEMIES, 
+      this.x, 
+      this.y, 
+      SPR_ENEMIES_WIDTH, 
+      SPR_ENEMIES_HEIGHT, 
+      0, 
+      this.enemyType * 8, 
+      8, 
+      8
+    );
+  }
+}
+
+/**
+ * @class PlayScene
+ * 
+ * @description
+ * Main game scene.
+ */
+class PlayScene {
+  /** Enemies on scren. */
+  enemies: Enemy[];
+
+  /** Vertical speed for all enemies. */
+  vspeed: i32;
+
+  /** Horizontal speed for all enemies. */
+  hspeed: i32;
+
+  /** Request enemies to change direction. */
+  changeDirection: bool;
+
+  /** If `true`, enemies will move to right. */
+  movingToRight: bool;
+
+  /** Ticks per enemy movement. The lower it is, the faster they move. */
+  ticksPerMove: i32;
+
+  /** Enem movement tick counter. */
+  ticks: i32;
+
+  /**
+   * @constructor
+   */
+  constructor() {
+    this.enemies = [];
+    this.vspeed = 0;
+    this.hspeed = 1;
+    this.movingToRight = true;
+    this.changeDirection = false;
+    this.ticksPerMove = 10;
+    this.ticks = 10;
+
+    this.createEnemies();
+  }
+
+  /**
+   * Fill the scene with a grid of enemies.
+   */
+  createEnemies(): void {
+    for(let row: i32 = 0; row < 4; row += 1) {
+      for(let column: i32 = 0; column < 6; column += 1) {
+        const enemy: Enemy = new Enemy((column * 9), (row * 9), row);
+        this.enemies.push(enemy);
+      }
+    }
+  }
+
+  /**
+   * Move enemy grid.
+   */
+  moveEnemies(): void {
+    // When requested to change direction, enemies will fall and bounce back
+    // to the opposing side...
+    if(this.changeDirection === true) {
+      this.vspeed = 1;
+      this.movingToRight = !this.movingToRight;
+      this.changeDirection = false;
+    }
+
+    // Iterate through enemies...
+    for(let index: i32 = 0; index < this.enemies.length; index += 1) {
+      const enemy: Enemy = this.enemies[index];
+
+      // Move enemies...
+      enemy.x += this.movingToRight? this.hspeed: -this.hspeed;
+      enemy.y += this.vspeed;
+
+      // The first enemies to hit one of the sides of screen will request
+      // everyone to bounce back to the opposing side. This will happen on
+      // the next tick...
+      if(this.changeDirection === false && enemy.isOnSide) {
+        this.changeDirection = true;
+      }
+
+      enemy.update();
+    }
+
+    // Reset vertical speed and prepare for the next tick...
+    this.vspeed = 0;
+    this.ticks = this.ticksPerMove;
+  }
+
+  update(): void {
+    this.ticks -= 1;
+    
+    if(this.ticks <= 0) {
+      this.moveEnemies();
+    }
+  }
+
+  draw(): void {
+    for(let index: i32 = 0; index < this.enemies.length; index += 1) {
+      const enemy: Enemy = this.enemies[index];
+      enemy.draw();
+    }
+  }
+}
+
+//#endregion </game.ts>
 //#region <index.ts>
+/** @todo Temporary scene. */
+const scene: PlayScene = new PlayScene();
+
 /**
  * @event start
  * 
@@ -416,30 +660,14 @@ export function start(): void {
 }
 
 /**
- * @todo Temporary.
- * X position.
- */
-let x: i32 = 16;
-
-/**
- * @todo Temporary.
- * Y position.
- */
-let y: i32 = 16;
-
-/**
  * @event update
  * 
  * This event should run each frame.
  */
 export function update(): void {
   clearScreen(0);
-  
-  if(Gamepad.up.held)    { y -= 1; }
-  if(Gamepad.down.held)  { y += 1; }
-  if(Gamepad.left.held)  { x -= 1; }
-  if(Gamepad.right.held) { x += 1; }
 
-  drawImagePart(SPR_ENEMIES, x, y, 8, 16, 0, 0, 8, 8, 0);
+  scene.update();
+  scene.draw();
 }
 //#endregion </index.ts>
