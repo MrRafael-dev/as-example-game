@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>AssemblyScript Game Example</title>
+<style>
+/*
+ * Color palette.
+ * They're only declared here for reference. These are the same colors 
+ * declared on the script.
+ */
+:root {
+	--black: #16171A;
+	--navy: #002859;
+	--blue: #007899;
+	--red: #D62411;
+	--pink: #FF2674;
+	--green: #10D275;
+	--yellow: #FFD100;
+	--white: #FAFDFF;
+}
+
+/*
+ * Minimal CSS reset.
+ */
+* {
+	margin: 0;
+	padding: 0;
+}
+
+/*
+ * Set background to black, just to make it nicer to look at.
+ */
+body {
+	background-color: var(--black);
+}
+
+/*
+ * Apply letterbox scaling to `<canvas>` elements.
+ */
+canvas {
+	image-rendering: -moz-crisp-edges;
+	image-rendering: -webkit-crisp-edges;
+	image-rendering: pixelated;
+	image-rendering: crisp-edges;
+	position: absolute;
+	top: 50%;
+	left: 50%;
+	transform: translate(-50%, -50%);
+	width: 100vmin;
+}
+</style>
+</head>
+<body>
+<canvas width="64" height="64" id="canvas"></canvas>
+<script type="module">
+import { memory, start, update } from "./build/release.js";
+
+/** Reference config for `asconfig.json`. */
+const config = {
+	options: {
+  	bindings: "esm",
+  	runtime: "incremental",
+  	initialMemory: 2,
+  	maximumMemory: 2,
+  	zeroFilledMemory: true,
+  	memoryBase: 16392
+	},
+	
+	targets: {
+  	debug: {
+    	outFile: "build/debug.wasm",
+    	textFile: "build/debug.wat",
+    	sourceMap: true,
+    	debug: true
+  	},
+
+  	release: {
+    	outFile: "build/release.wasm",
+    	textFile: "build/release.wat",
+    	sourceMap: true,
+    	optimizeLevel: 3,
+    	shrinkLevel: 0,
+    	converge: false,
+    	noAssert: false
+  	}
+	}
+};
+
+/**
+ * Memory offsets in use for the game.
+ * 
+ * Everything is stored as `u8`, which includes every pixel for the video ram
+ * and input states.
+ * 
+ * Although they could be optimized for memory by using nibbles, keeping it
+ * like this makes it simpler to implement.
+ */
+const MemoryOffsets = {
+	BUTTON_UP   : 16,
+	BUTTON_DOWN : 17,
+	BUTTON_LEFT : 18,
+	BUTTON_RIGHT: 19,
+	BUTTON_SPACE: 20,
+	VRAM        : 25
+};
+
+/** Memory inspector. */
+const dataView = new DataView(memory.buffer);
+
+/**
+ * @type {HTMLCanvasElement}
+ * Main `<canvas>` element.
+ */
+const canvas = document.getElementById("canvas");
+
+/** 2D Rendering context. */
+const context = canvas.getContext("2d");
+
+/** Input state indexes. */
+const InputState = {
+	IDLE    : 0,
+	PRESSED : 1,
+	HELD    : 2,
+	RELEASED: 3
+};
+
+/**
+ * Input state life cycle.
+ * 
+ * It represents the state change between each key when pressed or released.
+ */
+const InputStateCycle = {
+	pressed: [
+		InputState.PRESSED, 
+		InputState.HELD, 
+		InputState.HELD, 
+		InputState.PRESSED
+	],
+	released: [
+		InputState.IDLE,
+		InputState.RELEASED,
+		InputState.RELEASED,
+		InputState.IDLE
+	]
+};
+
+/**
+ * @class Input
+ * 
+ * @description
+ * Represents a single input controller, which can hold a state.
+ */
+class Input {
+	/** Memory offset. */
+	offset = 0;
+
+	/** Input state. */
+	state = 0;
+
+	/**
+	 * @constructor
+	 * 
+	 * @param {number} offset Memory offset.
+	 * @param {number} state Input state.
+	 */
+	constructor(offset, state = 0) {
+		this.offset = offset;
+		this.state  = state;
+	}
+
+	/**
+	 * @event update
+	 * 
+	 * Input state update.
+   *
+   * @param {boolean} pressed Input state to be compared.
+   *
+   * @returns {number}
+   */
+	 update(pressed) {
+		// Prevent underflow/overflow...
+		if(this.state < 0 || this.state >= 4) {
+			this.state = 0;
+		}
+
+		// Set next input based on it's cycle...
+    if(pressed) {
+      this.state = InputStateCycle.pressed[this.state];
+    }
+    else {
+      this.state = InputStateCycle.released[this.state];
+    }
+
+		// Update memory...
+		dataView.setUint8(this.offset, this.state);
+  }
+}
+
+/** Mapped key states from the web browser. */
+const keys = {
+	ArrowUp   : false,
+	ArrowDown : false,
+	ArrowLeft : false,
+	ArrowRight: false,
+	" "       : false
+};
+
+/** Mapped buttons from the main memory. */
+const buttons = {
+	ArrowUp   : new Input(MemoryOffsets.BUTTON_UP),
+	ArrowDown : new Input(MemoryOffsets.BUTTON_DOWN),
+	ArrowLeft : new Input(MemoryOffsets.BUTTON_LEFT),
+	ArrowRight: new Input(MemoryOffsets.BUTTON_RIGHT),
+	" "       : new Input(MemoryOffsets.BUTTON_SPACE),
+};
+
+/**
+ * @event keydown
+ * 
+ * Triggered when a key is pressed/held.
+ * 
+ * @param {KeyboardEvent} event Event handler. 
+ */
+addEventListener("keydown", (event) => {
+	const keyName = event.key;
+
+	if(keyName in keys) {
+		keys[keyName] = true;
+	}
+});
+
+/**
+ * @event keydown
+ * 
+ * Triggered when a key is released.
+ * 
+ * @param {KeyboardEvent} event Event handler. 
+ */
+addEventListener("keyup", (event) => {
+	const keyName = event.key;
+
+	if(keyName in keys) {
+		keys[keyName] = false;
+	}
+});
+
+/**
+ * @class Color
+ * 
+ * @description
+ * Represents an RGBA color.
+ */
+class Color {
+	/** Red. */
+	r = 0x00;
+
+	/** Green. */
+	g = 0x00;
+
+	/** Blue. */
+	b = 0x00;
+
+	/** Alpha. */
+	a = 0xFF;
+
+	/**
+	 * @constructor
+	 * 
+	 * @param {number} r Red.
+	 * @param {number} g Green.
+	 * @param {number} b Blue.
+	 * @param {number} a Alpha.
+	 */
+	constructor(r, g, b, a = 0xFF) {
+		this.r = r;
+		this.g = g;
+		this.b = b;
+		this.a = a;
+	}
+}
+
+/**
+ * Color palete.
+ * 
+ * If your editor supports color preview, they're declared as CSS variables
+ * on stylesheet so you can see them.
+ */
+const palette = [
+	new Color(0x16, 0x17, 0x1A), // Black.
+	new Color(0x00, 0x28, 0x59), // Navy.
+	new Color(0x00, 0x78, 0x99), // Blue.
+	new Color(0xD6, 0x24, 0x11), // Red.
+	new Color(0xFF, 0x26, 0x74), // Pink.
+	new Color(0x10, 0xD2, 0x75), // Green.
+	new Color(0xFF, 0xD1, 0x00), // Yellow.
+	new Color(0xFA, 0xDF, 0xFF), // White.
+];
+
+/**
+ * @event render
+ * 
+ * Main render function.
+ */
+function render() {
+	// Get image data and calculate main area of the canvas.
+	const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+	const area      = canvas.width * canvas.height;
+	
+	// Iterate through screen memory...
+	screenMemory: for(let index = 0; index < area; index += 1) {
+		const pixel       = dataView.getUint8(MemoryOffsets.VRAM + index);
+		const colorIndex  = pixel >= 0 && pixel < palette.length? pixel: 0;
+		const colorData   = palette[colorIndex];
+		const dataOffset  = index * 4;
+
+		// Fill pixel data...
+		imageData.data[dataOffset    ] = colorData.r; // Red.
+		imageData.data[dataOffset + 1] = colorData.g; // Green.
+		imageData.data[dataOffset + 2] = colorData.b; // Blue.
+		imageData.data[dataOffset + 3] = colorData.a; // Alpha.
+	}
+
+	context.putImageData(imageData, 0, 0);
+}
+
+/**
+ * @event loop
+ * 
+ * Main loop.
+ */
+function loop(timestamp) {
+	// Update button states...
+	for(const keyName in buttons) {
+		buttons[keyName].update(keys[keyName]);
+	}
+
+	// Call update/render events...
+	update();
+	render();
+
+	// Loop...
+	requestAnimationFrame(loop);
+}
+
+// Init...
+start();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
